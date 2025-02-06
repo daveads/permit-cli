@@ -1,94 +1,75 @@
 import { Permit } from 'permitio';
 import { HCLGenerator, WarningCollector } from '../types.js';
 import { createSafeId } from '../utils.js';
-import Handlebars, { TemplateDelegate } from 'handlebars';
+import Handlebars from 'handlebars';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { ResourceRead } from 'permitio/build/main/openapi/types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-interface ConditionSetData {
-	key: string;
-	name: string;
-	description?: string;
-	conditions: string;
-	resource?: ResourceRead;
-	resourceType: string;
+interface ConditionSetRuleData {
+  key: string;
+  userSet: string;
+  resourceSet: string;
+  permission: string;
 }
 
-type ValidConditionSet = {
-	key: string;
-	name: string;
-	description?: string;
-	conditions: string;
-	resource?: ResourceRead;
-	resourceType: string;
-} | null;
-
 export class ConditionSetGenerator implements HCLGenerator {
-	name = 'condition sets';
-	private template: TemplateDelegate<{ conditionSets: ConditionSetData[] }>;
+  name = 'condition set rules';
+  private template: Handlebars.TemplateDelegate<{rules: ConditionSetRuleData[]}>;
 
-	constructor(
-		private permit: Permit,
-		private warningCollector: WarningCollector,
-	) {
-		this.template = Handlebars.compile(
-			readFileSync(join(__dirname, '../templates/condition-set.hcl'), 'utf-8'),
-		);
-	}
+  constructor(
+    private permit: Permit,
+    private warningCollector: WarningCollector,
+  ) {
+    this.template = Handlebars.compile(
+      readFileSync(join(__dirname, '../templates/condition-set.hcl'), 'utf-8'),
+    );
+  }
 
-	async generateHCL(): Promise<string> {
-		try {
-			const conditionSets = await this.permit.api.conditionSets.list();
-			if (
-				!conditionSets ||
-				!Array.isArray(conditionSets) ||
-				conditionSets.length === 0
-			) {
-				return '';
-			}
+  async generateHCL(): Promise<string> {
+    try {
+      const rules = await this.permit.api.conditionSetRules.list({});
+      
+      if (!rules || !Array.isArray(rules) || rules.length === 0) {
+        return '';
+      }
 
-			const validSets = conditionSets
-				.map<ValidConditionSet>(set => {
-					try {
-						const isResourceSet = set.type === 'resourceset';
-						const resourceType = isResourceSet ? 'resource_set' : 'user_set';
-						const conditions =
-							typeof set.conditions === 'string'
-								? set.conditions
-								: JSON.stringify(set.conditions || '');
+      const validRules = rules.map(rule => {
+        try {
+          // Clean up the userSet and resourceSet names by removing __autogen_ prefix
+          const cleanUserSet = rule.user_set.replace('__autogen_', '');
+          const cleanResourceSet = rule.resource_set;
 
-						return {
-							key: createSafeId(set.key),
-							name: set.name,
-							description: set.description,
-							conditions,
-							resource: set.resource,
-							resourceType,
-						};
-					} catch (setError) {
-						this.warningCollector.addWarning(
-							`Failed to export condition set ${set.key}: ${setError}`,
-						);
-						return null;
-					}
-				})
-				.filter((set): set is ConditionSetData => set !== null);
+          // Create key without including the permission - simplified naming
+          // Example: "allow_advertised_practitioner" instead of "allow_advertised_practitioner_practitioner_read"
+          const key = `allow_${cleanResourceSet}`;
 
-			if (validSets.length === 0) return '';
+          return {
+            key: createSafeId(key),
+            userSet: createSafeId(cleanUserSet),
+            resourceSet: createSafeId(cleanResourceSet),
+            permission: rule.permission,
+          };
+        } catch (ruleError) {
+          this.warningCollector.addWarning(
+            `Failed to export condition set rule: ${ruleError}`,
+          );
+          return null;
+        }
+      }).filter((rule): rule is ConditionSetRuleData => rule !== null);
 
-			return (
-				'\n# Condition Sets\n' + this.template({ conditionSets: validSets })
-			);
-		} catch (error) {
-			this.warningCollector.addWarning(
-				`Failed to export condition sets: ${error}`,
-			);
-			return '';
-		}
-	}
+      if (validRules.length === 0) return '';
+
+      // Return generated HCL
+      return '\n# Condition Set Rules\n' + this.template({ rules: validRules });
+    } catch (error) {
+      this.warningCollector.addWarning(
+        `Failed to export condition set rules: ${error}`,
+      );
+      return '';
+    }
+  }
 }
