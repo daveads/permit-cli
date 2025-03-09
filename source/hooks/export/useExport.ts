@@ -28,7 +28,6 @@ export const useExport = (apiKey: string) => {
 		error: null,
 		warnings: [],
 	});
-
 	const permit = usePermitSDK(apiKey);
 
 	const exportConfig = async (scope: ExportScope) => {
@@ -41,28 +40,99 @@ export const useExport = (apiKey: string) => {
 # Organization: ${scope?.organization_id || 'unknown'}
 ${generateProviderBlock()}`;
 
-			const generators = [
-				new ResourceGenerator(permit, warningCollector),
-				new RoleGenerator(permit, warningCollector),
-				new UserAttributesGenerator(permit, warningCollector),
-				new RelationGenerator(permit, warningCollector),
-				new ConditionSetGenerator(permit, warningCollector),
-				new ResourceSetGenerator(permit, warningCollector),
-				new UserSetGenerator(permit, warningCollector),
-				new RoleDerivationGenerator(permit, warningCollector),
-			];
+			// Create all generators first
+			const resourceGenerator = new ResourceGenerator(permit, warningCollector);
+			const roleGenerator = new RoleGenerator(permit, warningCollector);
+			const userAttributesGenerator = new UserAttributesGenerator(
+				permit,
+				warningCollector,
+			);
+			const relationGenerator = new RelationGenerator(permit, warningCollector);
+			const conditionSetGenerator = new ConditionSetGenerator(
+				permit,
+				warningCollector,
+			);
+			const resourceSetGenerator = new ResourceSetGenerator(
+				permit,
+				warningCollector,
+			);
+			const userSetGenerator = new UserSetGenerator(permit, warningCollector);
+			const roleDerivationGenerator = new RoleDerivationGenerator(
+				permit,
+				warningCollector,
+			);
 
-			for (const generator of generators) {
-				setState(prev => ({
-					...prev,
-					status: `Exporting ${generator.name}...`,
-				}));
+			// Process resources first
+			setState(prev => ({ ...prev, status: `Exporting resources...` }));
+			const resourcesHCL = await resourceGenerator.generateHCL();
+			if (resourcesHCL) hcl += resourcesHCL;
 
-				const generatedHCL = await generator.generateHCL();
-				if (generatedHCL) {
-					hcl += generatedHCL;
+			// Process roles
+			setState(prev => ({ ...prev, status: `Exporting roles...` }));
+			const rolesHCL = await roleGenerator.generateHCL();
+			if (rolesHCL) hcl += rolesHCL;
+
+			// Get role ID map and share with role derivation generator
+			if (typeof roleGenerator.getRoleIdMap === 'function') {
+				const roleIdMap = roleGenerator.getRoleIdMap();
+				if (typeof roleDerivationGenerator.setRoleIdMap === 'function') {
+					roleDerivationGenerator.setRoleIdMap(roleIdMap);
+					console.log('Shared role ID map with RoleDerivationGenerator');
+				} else {
+					console.warn(
+						'RoleDerivationGenerator does not implement setRoleIdMap method',
+					);
 				}
+			} else {
+				console.warn('RoleGenerator does not implement getRoleIdMap method');
 			}
+
+			// Process user attributes
+			setState(prev => ({ ...prev, status: `Exporting user attributes...` }));
+			const userAttributesHCL = await userAttributesGenerator.generateHCL();
+			if (userAttributesHCL) hcl += userAttributesHCL;
+
+			// Process relations and get ID map for role derivations
+			setState(prev => ({ ...prev, status: `Exporting relations...` }));
+			const relationsHCL = await relationGenerator.generateHCL();
+			if (relationsHCL) hcl += relationsHCL;
+
+			// Get relation ID map and share with role derivation generator
+			if (typeof relationGenerator.getRelationIdMap === 'function') {
+				const relationIdMap = relationGenerator.getRelationIdMap();
+				if (typeof roleDerivationGenerator.setRelationIdMap === 'function') {
+					roleDerivationGenerator.setRelationIdMap(relationIdMap);
+					console.log('Shared relation ID map with RoleDerivationGenerator');
+				} else {
+					console.warn(
+						'RoleDerivationGenerator does not implement setRelationIdMap method',
+					);
+				}
+			} else {
+				console.warn(
+					'RelationGenerator does not implement getRelationIdMap method',
+				);
+			}
+
+			// Process condition sets
+			setState(prev => ({ ...prev, status: `Exporting condition sets...` }));
+			const conditionSetsHCL = await conditionSetGenerator.generateHCL();
+			if (conditionSetsHCL) hcl += conditionSetsHCL;
+
+			// Process resource sets
+			setState(prev => ({ ...prev, status: `Exporting resource sets...` }));
+			const resourceSetsHCL = await resourceSetGenerator.generateHCL();
+			if (resourceSetsHCL) hcl += resourceSetsHCL;
+
+			// Process user sets
+			setState(prev => ({ ...prev, status: `Exporting user sets...` }));
+			const userSetsHCL = await userSetGenerator.generateHCL();
+			if (userSetsHCL) hcl += userSetsHCL;
+
+			// Process role derivations last (now with both relation and role ID maps)
+			setState(prev => ({ ...prev, status: `Exporting role derivations...` }));
+			const roleDerivationsHCL = await roleDerivationGenerator.generateHCL();
+			if (roleDerivationsHCL) hcl += roleDerivationsHCL;
 
 			return { hcl, warnings: warningCollector.getWarnings() };
 		} catch (error) {

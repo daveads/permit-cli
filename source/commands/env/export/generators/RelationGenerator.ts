@@ -55,6 +55,7 @@ interface RelationData {
 export class RelationGenerator implements HCLGenerator {
 	name = 'relation';
 	private template: Handlebars.TemplateDelegate<{ relations: RelationData[] }>;
+	private relationIdMap = new Map<string, string>();
 
 	constructor(
 		private permit: Permit,
@@ -65,13 +66,16 @@ export class RelationGenerator implements HCLGenerator {
 		this.template = Handlebars.compile(templateContent);
 	}
 
+	public getRelationIdMap(): Map<string, string> {
+		return this.relationIdMap;
+	}
+
 	// Generate a relation ID based on the relationship semantics
 	private generateRelationId(
 		subjectResource: string,
 		relation: RelationRead,
 		objectResource: string,
 	): string {
-		// For these relation types, we want the object resource to come first in the ID
 		const objectFirstRelations = ['owner', 'part'];
 
 		if (relation.key && objectFirstRelations.includes(relation.key)) {
@@ -85,6 +89,9 @@ export class RelationGenerator implements HCLGenerator {
 		const relations: RelationData[] = [];
 		const processedRelations = new Set<string>();
 		const resourcesMap = new Map<string, ResourceRead>();
+
+		// Clear existing data
+		this.relationIdMap.clear();
 
 		try {
 			// Get all resources first
@@ -137,6 +144,7 @@ export class RelationGenerator implements HCLGenerator {
 								safeObjectResource,
 							);
 
+							// Store the relation with its Terraform resource name
 							relations.push({
 								relation_id: relationId,
 								name: unescapeHtml(relation.name) || relation.key,
@@ -152,6 +160,10 @@ export class RelationGenerator implements HCLGenerator {
 									`permitio_resource.${safeSubjectResource}`,
 								],
 							});
+
+							// IMPORTANT: Store the relation ID mapping for use by RoleDerivationGenerator
+							const relationLookupKey = `${relation.subject_resource}:${relation.key}:${relation.object_resource}`;
+							this.relationIdMap.set(relationLookupKey, relationId);
 
 							processedRelations.add(relationKey);
 						}

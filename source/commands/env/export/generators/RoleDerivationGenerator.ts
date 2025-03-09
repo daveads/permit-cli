@@ -4,23 +4,9 @@ import Handlebars from 'handlebars';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import {
-	ResourceRoleRead,
-	RelationRead,
-	ResourceRead,
-} from 'permitio/build/main/openapi/types';
 
 const currentFilePath = fileURLToPath(import.meta.url);
 const currentDirPath = dirname(currentFilePath);
-
-interface PaginatedResponse<T> {
-	data: T[];
-	pagination?: {
-		total_count?: number;
-		page?: number;
-		per_page?: number;
-	};
-}
 
 interface RoleDerivationData {
 	id: string;
@@ -32,30 +18,16 @@ interface RoleDerivationData {
 	dependencies: string[];
 }
 
-interface ResourceData {
-	resource: ResourceRead;
-	roles: ResourceRoleRead[];
-	relations: RelationRead[];
-}
-
-interface ResourceRelation {
-	sourceResourceKey: string;
-	targetResourceKey: string;
-	relation: RelationRead;
-}
-
-interface TerraformRelationMapping {
-	relationKey: string;
-	sourceResource: string;
-	targetResource: string;
-	terraformResourceName: string;
-}
-
 export class RoleDerivationGenerator implements HCLGenerator {
 	name = 'role derivation';
 	private template: Handlebars.TemplateDelegate<{
 		derivations: RoleDerivationData[];
 	}>;
+
+	// Store the relation ID mapping from RelationGenerator
+	private relationIdMap = new Map<string, string>();
+	// Store the role ID mapping from RoleGenerator
+	private roleIdMap = new Map<string, string>();
 
 	constructor(
 		private permit: Permit,
@@ -69,182 +41,197 @@ export class RoleDerivationGenerator implements HCLGenerator {
 		this.template = Handlebars.compile(templateContent);
 	}
 
-	private async gatherResourceData(): Promise<Map<string, ResourceData>> {
-		const resourceMap = new Map<string, ResourceData>();
+	// Method to set relation ID map from RelationGenerator
+	public setRelationIdMap(relationIdMap: Map<string, string>): void {
+		this.relationIdMap = relationIdMap;
+	}
 
+	// Method to set role ID map from RoleGenerator
+	public setRoleIdMap(roleIdMap: Map<string, string>): void {
+		this.roleIdMap = roleIdMap;
+	}
+
+	// Helper method to get the correct Terraform ID for a role
+	private getRoleTerraformId(roleKey: string, resourceKey: string): string {
+		// First check if we have a specific resource-role mapping
+		const resourceRoleKey = `${resourceKey}:${roleKey}`;
+		if (this.roleIdMap.has(resourceRoleKey)) {
+			return this.roleIdMap.get(resourceRoleKey)!;
+		}
+
+		// Then check if we have a general role mapping
+		if (this.roleIdMap.has(roleKey)) {
+			return this.roleIdMap.get(roleKey)!;
+		}
+
+		// If it's not found in the map, add a warning and use a safe fallback
+		this.warningCollector.addWarning(
+			`Role ID not found for ${roleKey} on resource ${resourceKey}. Using fallback.`,
+		);
+
+		// Fallback - create a safe ID based on both resource and role
+		return `${resourceKey}__${roleKey}`;
+	}
+
+	// Helper method to find the correct relation Terraform resource name
+	private findRelationTerraformName(
+		sourceResource: string,
+		targetResource: string,
+		relationKey: string,
+	): string | undefined {
+		const directKey = `${sourceResource}:${relationKey}:${targetResource}`;
+		if (this.relationIdMap.has(directKey)) {
+			return this.relationIdMap.get(directKey);
+		}
+
+		const reverseKey = `${targetResource}:${relationKey}:${sourceResource}`;
+		if (this.relationIdMap.has(reverseKey)) {
+			return this.relationIdMap.get(reverseKey);
+		}
+
+		// Search for a relation with the same objects and relation key
+		for (const [key, value] of this.relationIdMap.entries()) {
+			const [subject, relation, object] = key.split(':');
+
+			if (
+				relation === relationKey &&
+				((subject === sourceResource && object === targetResource) ||
+					(subject === targetResource && object === sourceResource))
+			) {
+				return value;
+			}
+		}
+
+		// Fallback to typical naming patterns
+		const possessivePattern = `${targetResource}_${sourceResource}`;
+		const normalPattern = `${sourceResource}_${targetResource}`;
+
+		// Use possessive pattern for special relations
+		if (['owner', 'part'].includes(relationKey)) {
+			return possessivePattern;
+		}
+
+		return normalPattern;
+	}
+
+	// Helper to create a meaningful derivation ID
+	private createDerivationId(
+		sourceResourceKey: string,
+		sourceRoleKey: string,
+		targetResourceKey: string,
+		targetRoleKey: string,
+	): string {
+		// Make sure the derivation ID is unique for the specific resources and roles
+		return `${sourceResourceKey}_${sourceRoleKey}_to_${targetResourceKey}_${targetRoleKey}`;
+	}
+
+	async generateHCL(): Promise<string> {
 		try {
+			// Get all resources
 			const resources = await this.permit.api.resources.list();
+			if (!Array.isArray(resources) || !resources.length) return '';
 
-			if (!Array.isArray(resources) || !resources.length) return resourceMap;
+			const derivations: RoleDerivationData[] = [];
+			const processedDerivations = new Set<string>();
 
 			for (const resource of resources) {
 				if (!resource.key) continue;
 
 				try {
+					// Get roles for this resource
 					const roles = await this.permit.api.resourceRoles.list({
 						resourceKey: resource.key,
 					});
 
-					const relationsResponse =
-						await this.permit.api.resourceRelations.list({
-							resourceKey: resource.key,
-						});
+					if (!Array.isArray(roles) || !roles.length) continue;
 
-					const relations = Array.isArray(relationsResponse)
-						? relationsResponse
-						: (relationsResponse as PaginatedResponse<RelationRead>)?.data ||
-							[];
+					for (const role of roles) {
+						if (!role.key || !role.granted_to?.users_with_role?.length)
+							continue;
 
-					resourceMap.set(resource.key, {
-						resource,
-						roles: Array.isArray(roles) ? roles : [],
-						relations,
-					});
+						for (const grant of role.granted_to.users_with_role) {
+							if (
+								!grant.role ||
+								!grant.on_resource ||
+								!grant.linked_by_relation
+							)
+								continue;
+
+							const sourceRoleKey = grant.role;
+							const sourceResourceKey = grant.on_resource;
+							const relationKey = grant.linked_by_relation;
+							const targetResourceKey = resource.key;
+							const targetRoleKey = role.key;
+
+							// Skip duplicates
+							const derivationKey = `${sourceRoleKey}:${sourceResourceKey}:${relationKey}:${targetRoleKey}:${targetResourceKey}`;
+							if (processedDerivations.has(derivationKey)) continue;
+
+							// Get the correct Terraform relation resource name
+							const relationResourceName = this.findRelationTerraformName(
+								sourceResourceKey,
+								targetResourceKey,
+								relationKey,
+							);
+
+							if (!relationResourceName) {
+								this.warningCollector.addWarning(
+									`Could not determine relation resource name for ${sourceRoleKey} (${sourceResourceKey}) → ${targetRoleKey} (${targetResourceKey}) via ${relationKey}`,
+								);
+								continue;
+							}
+
+							// Get the correct Terraform role IDs
+							const sourceTerraformRoleId = this.getRoleTerraformId(
+								sourceRoleKey,
+								sourceResourceKey,
+							);
+							const targetTerraformRoleId = this.getRoleTerraformId(
+								targetRoleKey,
+								targetResourceKey,
+							);
+
+							// Create a meaningful derivation ID
+							const id = this.createDerivationId(
+								sourceResourceKey,
+								sourceRoleKey,
+								targetResourceKey,
+								targetRoleKey,
+							);
+
+							// Standard dependencies
+							const dependencies = [
+								`permitio_role.${sourceTerraformRoleId}`,
+								`permitio_resource.${sourceResourceKey}`,
+								`permitio_role.${targetTerraformRoleId}`,
+								`permitio_resource.${targetResourceKey}`,
+								`permitio_relation.${relationResourceName}`,
+							];
+
+							// Add this derivation
+							derivations.push({
+								id,
+								role: sourceTerraformRoleId,
+								on_resource: sourceResourceKey,
+								to_role: targetTerraformRoleId,
+								resource: targetResourceKey,
+								linked_by: relationResourceName,
+								dependencies,
+							});
+
+							processedDerivations.add(derivationKey);
+						}
+					}
 				} catch (error) {
 					this.warningCollector.addWarning(
-						`Failed to gather data for resource '${resource.key}': ${error}`,
+						`Failed to process roles for resource '${resource.key}': ${error}`,
 					);
 				}
 			}
-		} catch (error) {
-			this.warningCollector.addWarning(`Failed to gather resources: ${error}`);
-		}
 
-		return resourceMap;
-	}
+			if (!derivations.length) return '';
 
-	private getAllResourceRelations(
-		resourceMap: Map<string, ResourceData>,
-	): ResourceRelation[] {
-		const relations: ResourceRelation[] = [];
-
-		for (const [, data] of resourceMap.entries()) {
-			if (Array.isArray(data.relations)) {
-				for (const relation of data.relations) {
-					if (
-						relation.key &&
-						relation.subject_resource &&
-						relation.object_resource
-					) {
-						relations.push({
-							sourceResourceKey: relation.subject_resource,
-							targetResourceKey: relation.object_resource,
-							relation,
-						});
-					}
-				}
-			}
-		}
-
-		return relations;
-	}
-
-	private buildRelationMappings(
-		relations: ResourceRelation[],
-	): Map<string, TerraformRelationMapping> {
-		const relationMappings = new Map<string, TerraformRelationMapping>();
-
-		for (const {
-			relation,
-			sourceResourceKey,
-			targetResourceKey,
-		} of relations) {
-			if (!relation.key) continue;
-
-			const mappingKey = `${sourceResourceKey}:${relation.key}:${targetResourceKey}`;
-
-			// Use the actual relation key as seen in the expected output
-			relationMappings.set(mappingKey, {
-				relationKey: relation.key,
-				sourceResource: sourceResourceKey,
-				targetResource: targetResourceKey,
-				terraformResourceName: `${sourceResourceKey}_${targetResourceKey}`,
-			});
-		}
-
-		return relationMappings;
-	}
-
-	private createDerivationId(sourceRole: string, targetRole: string): string {
-		// Create the ID in the format "source_target" without "to"
-		return `${sourceRole}_${targetRole}`;
-	}
-
-	private async generateDerivations(
-		resourceMap: Map<string, ResourceData>,
-	): Promise<RoleDerivationData[]> {
-		const derivations: RoleDerivationData[] = [];
-		const relations = this.getAllResourceRelations(resourceMap);
-		const relationMappings = this.buildRelationMappings(relations);
-
-		for (const [resourceKey, resourceData] of resourceMap.entries()) {
-			for (const role of resourceData.roles) {
-				if (!role.key || !role.granted_to?.users_with_role?.length) continue;
-
-				for (const grantInfo of role.granted_to.users_with_role) {
-					if (
-						!grantInfo.role ||
-						!grantInfo.on_resource ||
-						!grantInfo.linked_by_relation
-					) {
-						continue;
-					}
-
-					const sourceRoleKey = grantInfo.role;
-					const sourceResourceKey = grantInfo.on_resource;
-					const relationKey = grantInfo.linked_by_relation;
-					const targetResourceKey = resourceKey;
-					const targetRoleKey = role.key;
-
-					const mappingKey = `${sourceResourceKey}:${relationKey}:${targetResourceKey}`;
-					const relationMapping = relationMappings.get(mappingKey);
-
-					if (!relationMapping) {
-						this.warningCollector.addWarning(
-							`Could not find relation mapping for ${mappingKey}`,
-						);
-						continue;
-					}
-
-					const derivationId = this.createDerivationId(
-						sourceRoleKey,
-						targetRoleKey,
-					);
-
-					const dependencies: string[] = [
-						`permitio_role.${sourceRoleKey}`,
-						`permitio_resource.${sourceResourceKey}`,
-						`permitio_role.${targetRoleKey}`,
-						`permitio_resource.${targetResourceKey}`,
-						`permitio_relation.${relationMapping.terraformResourceName}`,
-					];
-
-					derivations.push({
-						id: derivationId,
-						role: sourceRoleKey,
-						on_resource: sourceResourceKey,
-						to_role: targetRoleKey,
-						resource: targetResourceKey,
-						linked_by: relationMapping.terraformResourceName,
-						dependencies,
-					});
-				}
-			}
-		}
-
-		return derivations;
-	}
-
-	async generateHCL(): Promise<string> {
-		try {
-			const resourceMap = await this.gatherResourceData();
-			if (resourceMap.size === 0) return '';
-
-			const derivations = await this.generateDerivations(resourceMap);
-			if (derivations.length === 0) return '';
-
-			const hcl = this.template({ derivations });
-			return '\n# Role Derivations\n' + hcl;
+			return '\n# Role Derivations\n' + this.template({ derivations });
 		} catch (error) {
 			this.warningCollector.addWarning(
 				`Failed to generate role derivations: ${error}`,
