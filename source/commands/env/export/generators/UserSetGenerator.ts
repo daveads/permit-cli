@@ -12,7 +12,6 @@ const __dirname = dirname(__filename);
 interface UserSetData {
 	key: string;
 	name: string;
-	description?: string;
 	conditions: object;
 	resource?: string;
 	depends_on: string[];
@@ -20,46 +19,134 @@ interface UserSetData {
 
 interface UserAttribute {
 	key: string;
-	id: string;
+	resourceKey: string;
+	type: string;
+	description: string;
 }
 
 export class UserSetGenerator implements HCLGenerator {
 	name = 'user set';
 	private template: TemplateDelegate<{ sets: UserSetData[] }>;
-	private userAttributes: UserAttribute[] = [];
+	private sharedUserAttributes: UserAttribute[] = [];
 
 	constructor(
 		private permit: Permit,
 		private warningCollector: WarningCollector,
 	) {
 		Handlebars.registerHelper('formatConditions', function (conditions) {
-			return JSON.stringify(conditions, null, 2)
-				.replace(/"([^"\s]+)":/g, '"$1" =')
-				.replace(/"contains" =/g, 'contains =')
-				.replace(/"([^"\s]+)"/g, '"$1"');
+			// Robust HCL formatter that handles complex nested structures
+			const formatHCL = (obj: unknown, indent = 0): string => {
+				if (obj === null || obj === undefined) return 'null';
+
+				// Primitive types
+				if (typeof obj === 'string') return `"${obj.replace(/"/g, '\\"')}"`;
+				if (typeof obj === 'number') return obj.toString();
+				if (typeof obj === 'boolean') return obj.toString();
+
+				// Handle arrays
+				if (Array.isArray(obj)) {
+					if (obj.length === 0) return '[]';
+
+					const indentStr = '  '.repeat(indent);
+					const innerIndentStr = '  '.repeat(indent + 1);
+
+					// For arrays, format each element
+					return `[\n${obj
+						.map(item => `${innerIndentStr}${formatHCL(item, indent + 1)}`)
+						.join(',\n')}\n${indentStr}]`;
+				}
+
+				// Handle objects (maps in HCL)
+				if (typeof obj === 'object') {
+					const indentStr = '  '.repeat(indent);
+					const innerIndentStr = '  '.repeat(indent + 1);
+
+					// Special handling for complex operators that may cause issues
+					const keys = Object.keys(obj);
+					if (keys.length === 1) {
+						// Get the first and only key
+						const key = keys[0];
+
+						if (key !== undefined) {
+							const objAsRecord = obj as Record<string, unknown>;
+							const value = objAsRecord[key];
+
+							// Special handling for array operators like array_intersect
+							if (
+								key === 'array_intersect' ||
+								key === 'array_contains' ||
+								key === 'string_contains'
+							) {
+								// If the value is a string with commas, assume it's a list of values
+								if (typeof value === 'string' && value.includes(',')) {
+									// Use heredoc syntax for long lists
+									return `{\n${innerIndentStr}${key} = <<EOT\n${value}\nEOT\n${indentStr}}`;
+								}
+							}
+						}
+					}
+
+					// Regular object formatting
+					const pairs = Object.entries(obj).map(([key, value]) => {
+						// Properly format keys with spaces or special characters
+						const formattedKey = /^[a-zA-Z0-9_]+$/.test(key) ? key : `"${key}"`;
+						return `${innerIndentStr}${formattedKey} = ${formatHCL(value, indent + 1)}`;
+					});
+
+					if (pairs.length === 0) return '{}';
+					return `{\n${pairs.join('\n')}\n${indentStr}}`;
+				}
+
+				// Fallback
+				return JSON.stringify(obj);
+			};
+
+			return formatHCL(conditions);
 		});
 
-		const templateContent = readFileSync(
+		let templateContent = readFileSync(
 			join(__dirname, '../templates/user-set.hcl'),
 			'utf-8',
 		);
+		templateContent = templateContent.replace(/^\s*description\s*=.*\n?/gm, '');
 		const cleanTemplate = templateContent.replace(/^#.*\n?/gm, '');
 		this.template = Handlebars.compile(cleanTemplate);
 	}
 
+	// Method to receive shared user attributes from UserAttributesGenerator
+	public setUserAttributes(attributes: UserAttribute[]): void {
+		this.sharedUserAttributes = attributes;
+		console.log(
+			`Received ${attributes.length} user attributes from UserAttributesGenerator`,
+		);
+	}
+
 	private async fetchUserAttributes(): Promise<void> {
+		// If we already have user attributes from the UserAttributesGenerator, use them
+		if (this.sharedUserAttributes.length > 0) {
+			console.log('Using shared user attributes');
+			return;
+		}
+
 		try {
 			const userResource = await this.permit.api.resources.get('__user');
 			if (!userResource?.attributes) return;
 
-			this.userAttributes = Object.entries(userResource.attributes)
+			// Use the same naming convention that UserAttributesGenerator uses
+			this.sharedUserAttributes = Object.entries(userResource.attributes)
+				.filter(
+					([key]) =>
+						!['key', 'roles', 'email', 'first_name', 'last_name'].includes(key),
+				)
 				.filter(([, attr]) => {
 					const description = attr.description?.toLowerCase() || '';
 					return !description.includes('built in attribute');
 				})
-				.map(([key]) => ({
+				.map(([key, attr]) => ({
 					key,
-					id: `user_${key.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`,
+					resourceKey: `user_${key.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`,
+					type: attr.type,
+					description: attr.description || '',
 				}));
 		} catch (error) {
 			this.warningCollector.addWarning(
@@ -73,8 +160,8 @@ export class UserSetGenerator implements HCLGenerator {
 		const stringifiedConditions = JSON.stringify(conditions);
 		const deps = new Set<string>();
 
-		// Check for attributes in user.<attribute> pattern
-		for (const attr of this.userAttributes) {
+		// Check for attributes in user.<attribute> and subject.<attribute> patterns
+		for (const attr of this.sharedUserAttributes) {
 			// Match both "user.<key>" and "subject.<key>" patterns
 			const userPattern = `"user.${attr.key}"`;
 			const subjectPattern = `"subject.${attr.key}"`;
@@ -83,7 +170,7 @@ export class UserSetGenerator implements HCLGenerator {
 				stringifiedConditions.includes(userPattern) ||
 				stringifiedConditions.includes(subjectPattern)
 			) {
-				deps.add(`permitio_user_attribute.${attr.id}`);
+				deps.add(`permitio_user_attribute.${attr.resourceKey}`);
 			}
 		}
 
@@ -121,7 +208,7 @@ export class UserSetGenerator implements HCLGenerator {
 
 	async generateHCL(): Promise<string> {
 		try {
-			// First fetch user attributes to build dependency list
+			// Get user attributes first (either shared or fetched)
 			await this.fetchUserAttributes();
 
 			const conditionSets = await this.permit.api.conditionSets.list({});
@@ -151,7 +238,6 @@ export class UserSetGenerator implements HCLGenerator {
 				userSets.push({
 					key: createSafeId(set.key),
 					name: set.name,
-					description: set.description,
 					conditions: processedConditions as object,
 					resource: set.resource_id?.toString(),
 					depends_on: dependencies,

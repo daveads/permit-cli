@@ -64,6 +64,11 @@ export class RoleDerivationGenerator implements HCLGenerator {
 			return this.roleIdMap.get(roleKey)!;
 		}
 
+		// For default roles, use the resource__role pattern directly
+		if (['admin', 'editor', 'viewer'].includes(roleKey)) {
+			return `${resourceKey}__${roleKey}`;
+		}
+
 		// If it's not found in the map, add a warning and use a safe fallback
 		this.warningCollector.addWarning(
 			`Role ID not found for ${roleKey} on resource ${resourceKey}. Using fallback.`,

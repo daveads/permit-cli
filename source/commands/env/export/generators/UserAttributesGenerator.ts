@@ -4,9 +4,17 @@ import Handlebars, { TemplateDelegate } from 'handlebars';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// built-in attributes that should be excluded from export
+const BUILTIN_USER_ATTRIBUTES = [
+	'key',
+	'roles',
+	'email',
+	'first_name',
+	'last_name',
+];
 
 interface UserAttributeData {
 	resourceKey: string;
@@ -23,23 +31,22 @@ export class UserAttributesGenerator implements HCLGenerator {
 		private permit: Permit,
 		private warningCollector: WarningCollector,
 	) {
-		// Register Handlebars helpers for formatting
+		// Register a simple helper that creates extremely safe descriptions for HCL
 		Handlebars.registerHelper('formatDescription', function (text) {
 			if (!text) return '';
-			// Decode HTML entities
-			const decoded = text.replace(/&[^;]+;/g, (match: string) => {
-				const entities: Record<string, string> = {
-					'&quot;': '"',
-					'&#x27;': "'",
-					'&amp;': '&',
-					'&lt;': '<',
-					'&gt;': '>',
-				};
-				return entities[match] || match;
-			});
-			// Escape special characters for HCL
-			return decoded.replace(/[\\"]/g, '\\$&');
+
+			// First, normalize the string to remove any non-basic characters
+			const sanitized = text
+				// Replace non-alphanumeric, non-basic punctuation with spaces
+				.replace(/[^\w\s.,!?()-]/g, ' ')
+				// Collapse multiple spaces into one
+				.replace(/\s+/g, ' ')
+				// Trim spaces
+				.trim();
+
+			return sanitized;
 		});
+
 		this.template = this.loadTemplate();
 	}
 
@@ -66,17 +73,26 @@ export class UserAttributesGenerator implements HCLGenerator {
 			if (!userResource?.attributes) {
 				return [];
 			}
-			return Object.entries(userResource.attributes)
-				.filter(([, attr]) => {
-					const description = attr.description?.toLowerCase() || '';
-					return !description.includes('built in attribute');
-				})
-				.map(([key, attr]) => ({
-					resourceKey: this.generateResourceKey(key),
-					key,
-					type: this.normalizeAttributeType(attr.type),
-					description: attr.description || '',
-				}));
+
+			return (
+				Object.entries(userResource.attributes)
+					// Filter out built-in attributes by key
+					.filter(([key]) => !BUILTIN_USER_ATTRIBUTES.includes(key))
+					// Additional filtering by description for extra safety
+					.filter(([, attr]) => {
+						const description = attr.description?.toLowerCase() || '';
+						return (
+							!description.includes('built in attribute') &&
+							!description.includes('built-in attribute')
+						);
+					})
+					.map(([key, attr]) => ({
+						resourceKey: this.generateResourceKey(key),
+						key,
+						type: this.normalizeAttributeType(attr.type),
+						description: attr.description || '',
+					}))
+			);
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
