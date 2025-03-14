@@ -1,5 +1,5 @@
 import React from 'react';
-import { useEffect, useState, FC } from 'react';
+import { useEffect, useState, FC, useRef } from 'react';
 import { useApiKeyApi } from '../../hooks/useApiKeyApi.js';
 import { useAuth } from '../../components/AuthProvider.js';
 import { ExportOptions } from '../../commands/env/export/types.js';
@@ -16,10 +16,16 @@ export const ExportContent: FC<{ options: ExportOptions }> = ({
 	const key = apiKey || authToken;
 	const { state, setState, exportConfig } = useExport(key);
 	const [hclOutput, setHclOutput] = useState<string | null>(null);
+	const hasRunRef = useRef(false);
 
 	useEffect(() => {
+		// Use a ref to ensure this only runs once, regardless of dependency changes
+		if (hasRunRef.current) return;
+		hasRunRef.current = true;
+
 		let isSubscribed = true;
 
+		// Define an async function for the export process
 		const runExport = async () => {
 			if (!key) {
 				setState({
@@ -33,11 +39,10 @@ export const ExportContent: FC<{ options: ExportOptions }> = ({
 
 			try {
 				setState(prev => ({ ...prev, status: 'Validating API key...' }));
-				const {
-					valid,
-					error: scopeError,
-					scope,
-				} = await validateApiKeyScope(key, 'environment');
+
+				// Validate the API key scope
+				const validationResult = await validateApiKeyScope(key, 'environment');
+				const { valid, error: scopeError, scope } = validationResult;
 
 				if (!valid || scopeError || !scope) {
 					setState({
@@ -49,6 +54,9 @@ export const ExportContent: FC<{ options: ExportOptions }> = ({
 					return;
 				}
 
+				// If component has been unmounted, don't proceed
+				if (!isSubscribed) return;
+
 				// Normalize the environment_id and project_id to match ExportScope
 				const normalizedScope = {
 					...scope,
@@ -56,17 +64,18 @@ export const ExportContent: FC<{ options: ExportOptions }> = ({
 					project_id: scope.project_id || undefined,
 				};
 
-				if (!isSubscribed) return;
-
 				setState(prev => ({
 					...prev,
 					status: 'Initializing export...',
 				}));
 
+				// Run the export
 				const { hcl, warnings } = await exportConfig(normalizedScope);
 
+				// If component has been unmounted, don't proceed
 				if (!isSubscribed) return;
 
+				// Handle file saving if needed
 				if (file) {
 					setState(prev => ({ ...prev, status: 'Saving to file...' }));
 					try {
@@ -86,8 +95,10 @@ export const ExportContent: FC<{ options: ExportOptions }> = ({
 					setHclOutput(hcl); // Store HCL output in state
 				}
 
+				// If component has been unmounted, don't proceed
 				if (!isSubscribed) return;
 
+				// Complete the process
 				setState({
 					status: '',
 					error: null,
@@ -95,7 +106,9 @@ export const ExportContent: FC<{ options: ExportOptions }> = ({
 					warnings,
 				});
 			} catch (err) {
+				// If component has been unmounted, don't proceed
 				if (!isSubscribed) return;
+
 				const errorMsg = err instanceof Error ? err.message : String(err);
 				setState({
 					status: '',
@@ -106,19 +119,22 @@ export const ExportContent: FC<{ options: ExportOptions }> = ({
 			}
 		};
 
+		// Execute the export process
 		runExport();
 
+		// Return cleanup function
 		return () => {
 			isSubscribed = false;
 		};
-	}, [key, file, validateApiKeyScope]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []); // Empty dependency array with eslint disable comment
 
 	return (
 		<>
 			<ExportStatus state={state} file={file} />
 			{!file && hclOutput && (
 				<Text>
-					<Text>{hclOutput}</Text> {/* Wrap HCL output in <Text> */}
+					<Text>{hclOutput}</Text>
 				</Text>
 			)}
 			{state.error && <Text color="red">{state.error}</Text>}
