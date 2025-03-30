@@ -6,6 +6,7 @@ export const PERMIT_API_URL = 'https://api.permit.io';
 export const PERMIT_API_STATISTICS_URL =
 	'https://pdp-statistics.api.permit.io/v2/stats';
 export const API_URL = 'https://api.permit.io/v2/';
+export const FACTS_API_URL = `${API_URL}facts/`;
 export const API_PDPS_CONFIG_URL = `${API_URL}pdps/me/config`;
 export const PERMIT_ORIGIN_URL = 'https://app.permit.io';
 
@@ -15,3 +16,6 @@ export const AUTH_REDIRECT_URI = `http://${AUTH_REDIRECT_HOST}:${AUTH_REDIRECT_P
 export const AUTH_PERMIT_DOMAIN = 'app.permit.io';
 export const AUTH_API_URL = 'https://api.permit.io/v1/';
 export const AUTH_PERMIT_URL = 'https://auth.permit.io';
+
+export const TERRAFORM_PERMIT_URL =
+	'https://permit-cli-terraform.up.railway.app';

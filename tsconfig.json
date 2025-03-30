@@ -4,9 +4,10 @@
 		"jsx": "react",
 		"moduleResolution": "node16",
 		"module": "Node16",
-		"strict": true,
-		"outDir": "dist"
+		"outDir": "dist",
+		"noUncheckedIndexedAccess": true,
+		"strict": true
 	},
-	"include": ["source"],
-	"exclude": ["node_modules"]
+	"include": ["source", "tests/components/APISyncUserComponent.test.tsx"],
+	"exclude": ["node_modules", "source/lib/api"]
 }

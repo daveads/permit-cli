@@ -33,6 +33,7 @@ vi.mock('../source/components/AuthProvider.tsx', async () => {
 
 vi.mock('../source/hooks/useApiKeyApi', async () => {
 	const original = await vi.importActual('../source/hooks/useApiKeyApi');
+
 	return {
 		...original,
 		useApiKeyApi: () => ({
@@ -108,7 +109,9 @@ describe('Select Component', () => {
 			return null;
 		});
 
-		const { lastFrame } = render(<Select options={{ key: 'valid_api_key' }} />);
+		const { lastFrame } = render(
+			<Select options={{ apiKey: 'valid_api_key' }} />,
+		);
 
 		await delay(100); // Allow async operations to complete
 
