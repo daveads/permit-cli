@@ -1,9 +1,9 @@
 name: Update OpenAPI Types
 
 on:
-  schedule:
-    # Run every two minutes for testing
-    - cron: '*/2 * * * *'
+  push:
+    branches:
+      - feat/auto-update-openapi-types  # Replace with your branch name
   workflow_dispatch:
     # Allow manual triggering
 
@@ -34,6 +34,9 @@ jobs:
 
       - name: Download PDP OpenAPI spec
         run: curl -o pdp-openapi.json https://pdp-api.permit.io/openapi.json
+
+      - name: Generate PDP TypeScript definitions
+        run: openapi-typescript pdp-openapi.json -o ./src/lib/api/pdp-v1.d.ts
 
       - name: Check for changes
         id: git-check
