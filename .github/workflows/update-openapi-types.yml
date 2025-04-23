@@ -6,7 +6,7 @@ on:
     - cron: '0 0 * * 1'
   push:
     branches:
-      - feat/auto-update # testing branch will remove later...
+      - auto-update # testing branch will remove later...
   workflow_dispatch:
     # Allow manual triggering
 
