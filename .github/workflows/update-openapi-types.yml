@@ -1,9 +1,12 @@
 name: Update OpenAPI Types
 
 on:
+  schedule:
+    # Run every 2 minutes for testing
+    - cron: '*/2 * * * *'
   push:
     branches:
-      - feat/auto-update-openapi-types  # Replace with your branch name
+      - feat/auto-update-openapi-types  # Your feature branch for testing
   workflow_dispatch:
     # Allow manual triggering
 
