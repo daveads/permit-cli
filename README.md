@@ -420,6 +420,7 @@ This command allows you to create RBAC policies using natural language. It uses 
 
 - `--api-key <string>` - Your [Permit.io](http://permit.io/) API key. If not provided, the command will use your stored credentials.
 
+<<<<<<< HEAD
 ### `env template apply`
 
 Use this command to apply a policy template to your current environment. This is useful for quickly setting up new environments with predefined configurations.
@@ -432,9 +433,45 @@ The command is using the Terraform provider to apply the template, but it's not 
 - `--template <string>` (Optional) - skips the template choice and applies the given template. It will fail if the template does not exist
 
 #### Example
+=======
+**Example:**
+>>>>>>> 9fa48bc3896a55c9186aa2abbeec7159df9c52d2
 
 ```bash
-$ permit env template apply --template my-template
+$ permit policy create ai
+Type your prompt...
+A CRM SaaS application with different user types
+```
+
+This will start an interactive chat where you can describe your authorization requirements in natural language. The AI will convert your description into a structured RBAC policy with resources, roles, and permissions.
+
+For example, you could describe:
+
+- A CRM SaaS application with different user types
+- Baseline WordPress policy with extended self-service capabilities
+- A file storage system with varying levels of access
+- Internal ticket management system for production teams
+
+The AI will generate appropriate resources, roles, and permissions based on your description. The generated policy will be displayed in a table format showing the resources, actions, roles, and permissions. You can then approve or reject the generated policy.
+
+If you approve the policy, the CLI will apply the policy to your [Permit.io](http://permit.io/) environment, creating all the resources, roles, and permissions defined in the policy.
+
+### Interactive Policy Wizard
+
+Define resources, generate test users, and assign roles through a simple step-by-step flow.
+
+#### `permit init`
+
+This command is a wizard command that should take the users through all the steps, from configuring policy to enforcing it in the application
+
+**Arguments (Optional):**
+
+- `--api-key <string>`: Use an environment API Key to create and store the policy.
+
+Example:
+
+```
+$ permit init --api-key permit_key
 ```
 
 ### `env apply openapi`
@@ -578,6 +615,7 @@ This enables Permit to perform authorization checks directly against your API en
 
 ---
 
+<<<<<<< HEAD
 ### `opa`
 
 This collection of commands aims to create new experiences for developers working with Open Policy Agent (OPA) in their projects.
@@ -850,6 +888,8 @@ $ permit init --api-key permit_key
 
 ---
 
+=======
+>>>>>>> 9fa48bc3896a55c9186aa2abbeec7159df9c52d2
 #### `permit policy create simple`
 
 A simple policy table creation wizard with the resources, actions, and roles.
